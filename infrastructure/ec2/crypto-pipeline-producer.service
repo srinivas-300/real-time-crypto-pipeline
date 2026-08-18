@@ -1,0 +1,18 @@
+[Unit]
+Description=Crypto Pipeline Kafka Producer
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/crypto-pipeline
+EnvironmentFile=/opt/crypto-pipeline/.env
+ExecStart=/opt/crypto-pipeline/.venv/bin/python -m producer.main
+Restart=on-failure
+RestartSec=10
+User=ec2-user
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=crypto-pipeline-producer
+
+[Install]
+WantedBy=multi-user.target
