@@ -13,6 +13,12 @@
       "Expiration": { "Days": 30 }
     },
     {
+      "ID": "expire-emr-logs",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "emr-logs/" },
+      "Expiration": { "Days": 14 }
+    },
+    {
       "ID": "expire-checkpoint-old-versions",
       "Status": "Enabled",
       "Filter": { "Prefix": "checkpoints/spark/" },
