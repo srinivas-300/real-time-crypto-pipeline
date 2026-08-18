@@ -12,3 +12,5 @@ build/
 htmlcov/
 .idea/
 .vscode/
+
+docs/BUILD_LOG.md

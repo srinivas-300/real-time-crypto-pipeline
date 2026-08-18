@@ -1,0 +1,38 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "MSKClusterConnect",
+      "Effect": "Allow",
+      "Action": ["kafka-cluster:Connect", "kafka-cluster:DescribeCluster"],
+      "Resource": "arn:aws:kafka:us-east-1:388381628350:cluster/crypto-pipeline-msk/*"
+    },
+    {
+      "Sid": "MSKTopicWrite",
+      "Effect": "Allow",
+      "Action": ["kafka-cluster:WriteData", "kafka-cluster:DescribeTopic"],
+      "Resource": "arn:aws:kafka:us-east-1:388381628350:topic/crypto-pipeline-msk/*/crypto.raw"
+    },
+    {
+      "Sid": "MSKBootstrapBrokers",
+      "Effect": "Allow",
+      "Action": ["kafka:GetBootstrapBrokers", "kafka:DescribeClusterV2"],
+      "Resource": "arn:aws:kafka:us-east-1:388381628350:cluster/crypto-pipeline-msk/*"
+    },
+    {
+      "Sid": "ProducerLogs",
+      "Effect": "Allow",
+      "Action": ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+      "Resource": "arn:aws:logs:us-east-1:388381628350:log-group:/crypto-pipeline/producer:*"
+    },
+    {
+      "Sid": "ProducerMetrics",
+      "Effect": "Allow",
+      "Action": "cloudwatch:PutMetricData",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": { "cloudwatch:namespace": "CryptoPipeline/Producer" }
+      }
+    }
+  ]
+}

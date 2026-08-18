@@ -1,0 +1,70 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DataLakeObjectAccess",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Resource": [
+        "arn:aws:s3:::crypto-pipeline-388381628350/bronze/crypto/*",
+        "arn:aws:s3:::crypto-pipeline-388381628350/silver/crypto/*",
+        "arn:aws:s3:::crypto-pipeline-388381628350/gold/crypto_5min/*",
+        "arn:aws:s3:::crypto-pipeline-388381628350/checkpoints/spark/*",
+        "arn:aws:s3:::crypto-pipeline-388381628350/errors/crypto/*"
+      ]
+    },
+    {
+      "Sid": "DataLakeListBucket",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::crypto-pipeline-388381628350",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "bronze/crypto/*",
+            "silver/crypto/*",
+            "gold/crypto_5min/*",
+            "checkpoints/spark/*",
+            "errors/crypto/*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "MSKClusterConnect",
+      "Effect": "Allow",
+      "Action": ["kafka-cluster:Connect", "kafka-cluster:DescribeCluster"],
+      "Resource": "arn:aws:kafka:us-east-1:388381628350:cluster/crypto-pipeline-msk/*"
+    },
+    {
+      "Sid": "MSKTopicReadRaw",
+      "Effect": "Allow",
+      "Action": ["kafka-cluster:ReadData", "kafka-cluster:DescribeTopic"],
+      "Resource": "arn:aws:kafka:us-east-1:388381628350:topic/crypto-pipeline-msk/*/crypto.raw"
+    },
+    {
+      "Sid": "MSKTopicWriteDlq",
+      "Effect": "Allow",
+      "Action": ["kafka-cluster:WriteData", "kafka-cluster:DescribeTopic"],
+      "Resource": "arn:aws:kafka:us-east-1:388381628350:topic/crypto-pipeline-msk/*/crypto.dlq"
+    },
+    {
+      "Sid": "MSKConsumerGroup",
+      "Effect": "Allow",
+      "Action": ["kafka-cluster:AlterGroup", "kafka-cluster:DescribeGroup"],
+      "Resource": "arn:aws:kafka:us-east-1:388381628350:group/crypto-pipeline-msk/*"
+    },
+    {
+      "Sid": "MSKBootstrapBrokers",
+      "Effect": "Allow",
+      "Action": ["kafka:GetBootstrapBrokers", "kafka:DescribeClusterV2"],
+      "Resource": "arn:aws:kafka:us-east-1:388381628350:cluster/crypto-pipeline-msk/*"
+    },
+    {
+      "Sid": "SparkLogs",
+      "Effect": "Allow",
+      "Action": ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+      "Resource": "arn:aws:logs:us-east-1:388381628350:log-group:/crypto-pipeline/spark:*"
+    }
+  ]
+}
