@@ -14,6 +14,12 @@
       "Resource": "arn:aws:kafka:us-east-1:388381628350:topic/crypto-pipeline-msk/*/crypto.raw"
     },
     {
+      "Sid": "MSKIdempotentProducer",
+      "Effect": "Allow",
+      "Action": "kafka-cluster:WriteDataIdempotently",
+      "Resource": "arn:aws:kafka:us-east-1:388381628350:cluster/crypto-pipeline-msk/*"
+    },
+    {
       "Sid": "MSKBootstrapBrokers",
       "Effect": "Allow",
       "Action": ["kafka:GetBootstrapBrokers", "kafka:DescribeClusterV2"],

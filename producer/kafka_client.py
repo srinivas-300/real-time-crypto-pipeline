@@ -1,7 +1,7 @@
-import json
-
 from kafka import KafkaProducer
 from kafka.errors import KafkaError
+from kafka.serializer.default import DefaultSerializer
+from kafka.serializer.json import JsonSerializer
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from producer.config import settings
@@ -27,8 +27,8 @@ def build_producer() -> KafkaProducer:
         retries=5,
         max_in_flight_requests_per_connection=5,
         linger_ms=100,
-        key_serializer=lambda k: k.encode("utf-8") if k else None,
-        value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+        key_serializer=DefaultSerializer(),
+        value_serializer=JsonSerializer(),
     )
 
 
