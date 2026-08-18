@@ -40,7 +40,7 @@ class Settings:
     kafka_security_protocol: str = field(
         default_factory=lambda: os.environ.get("KAFKA_SECURITY_PROTOCOL", "SASL_SSL")
     )
-    kafka_sasl_mechanism: str = field(default_factory=lambda: os.environ.get("KAFKA_SASL_MECHANISM", "OAUTHBEARER"))
+    kafka_sasl_mechanism: str = field(default_factory=lambda: os.environ.get("KAFKA_SASL_MECHANISM", "AWS_MSK_IAM"))
 
     producer_max_retries: int = field(default_factory=lambda: int(os.environ.get("PRODUCER_MAX_RETRIES", "5")))
     producer_retry_backoff_seconds: float = field(

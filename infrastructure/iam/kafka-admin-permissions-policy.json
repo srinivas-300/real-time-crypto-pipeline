@@ -1,0 +1,33 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "MSKClusterConnect",
+      "Effect": "Allow",
+      "Action": ["kafka-cluster:Connect", "kafka-cluster:DescribeCluster"],
+      "Resource": "arn:aws:kafka:us-east-1:388381628350:cluster/crypto-pipeline-msk/*"
+    },
+    {
+      "Sid": "MSKTopicAdmin",
+      "Effect": "Allow",
+      "Action": [
+        "kafka-cluster:CreateTopic",
+        "kafka-cluster:DeleteTopic",
+        "kafka-cluster:AlterTopic",
+        "kafka-cluster:DescribeTopic",
+        "kafka-cluster:DescribeTopicDynamicConfiguration",
+        "kafka-cluster:AlterTopicDynamicConfiguration"
+      ],
+      "Resource": [
+        "arn:aws:kafka:us-east-1:388381628350:topic/crypto-pipeline-msk/*/crypto.raw",
+        "arn:aws:kafka:us-east-1:388381628350:topic/crypto-pipeline-msk/*/crypto.dlq"
+      ]
+    },
+    {
+      "Sid": "MSKBootstrapBrokers",
+      "Effect": "Allow",
+      "Action": ["kafka:GetBootstrapBrokers", "kafka:DescribeClusterV2"],
+      "Resource": "arn:aws:kafka:us-east-1:388381628350:cluster/crypto-pipeline-msk/*"
+    }
+  ]
+}
