@@ -8,9 +8,10 @@
       "Resource": [
         "arn:aws:s3:::crypto-pipeline-388381628350/bronze/crypto/*",
         "arn:aws:s3:::crypto-pipeline-388381628350/silver/crypto/*",
-        "arn:aws:s3:::crypto-pipeline-388381628350/gold/crypto_5min/*",
+        "arn:aws:s3:::crypto-pipeline-388381628350/gold/crypto/*",
         "arn:aws:s3:::crypto-pipeline-388381628350/checkpoints/spark/*",
-        "arn:aws:s3:::crypto-pipeline-388381628350/errors/crypto/*"
+        "arn:aws:s3:::crypto-pipeline-388381628350/errors/crypto/*",
+        "arn:aws:s3:::crypto-pipeline-388381628350/warehouse/*"
       ]
     },
     {
@@ -23,12 +24,29 @@
           "s3:prefix": [
             "bronze/crypto/*",
             "silver/crypto/*",
-            "gold/crypto_5min/*",
+            "gold/crypto/*",
             "checkpoints/spark/*",
-            "errors/crypto/*"
+            "errors/crypto/*",
+            "warehouse/*"
           ]
         }
       }
+    },
+    {
+      "Sid": "IcebergGlueCatalogAccess",
+      "Effect": "Allow",
+      "Action": [
+        "glue:GetDatabase",
+        "glue:GetTable",
+        "glue:GetTables",
+        "glue:CreateTable",
+        "glue:UpdateTable"
+      ],
+      "Resource": [
+        "arn:aws:glue:us-east-1:388381628350:catalog",
+        "arn:aws:glue:us-east-1:388381628350:database/crypto_pipeline",
+        "arn:aws:glue:us-east-1:388381628350:table/crypto_pipeline/*"
+      ]
     },
     {
       "Sid": "MSKClusterConnect",

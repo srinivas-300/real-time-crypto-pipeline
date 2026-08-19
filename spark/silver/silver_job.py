@@ -1,20 +1,28 @@
 """
-Silver layer streaming job: S3 Bronze -> S3 Silver (+ errors/crypto DLQ).
+Silver layer streaming job: S3 Bronze -> Iceberg table crypto_pipeline.silver_crypto
+(+ errors/crypto DLQ, still plain Parquet).
 
 Reads Bronze via the file streaming source (not a second Kafka consumer),
 parses the raw JSON event payload, validates each record, deduplicates by
-event_id within a watermark window, and writes clean typed Parquet to Silver.
-Records that fail validation are written to errors/crypto/ with the specific
-reason(s) they failed, rather than silently dropped.
+event_id within a watermark window, and writes clean typed rows to an Iceberg
+table registered in the Glue Data Catalog (Glue itself acts as Iceberg's
+catalog implementation - no crawler needed, Spark keeps Glue's table metadata
+pointer in sync on every commit). Records that fail validation are written to
+errors/crypto/ with the specific reason(s) they failed, rather than silently
+dropped - this DLQ path is unrelated to the Silver table and stays plain
+Parquet since it's not part of the Glue/Athena-queryable catalog.
 
 Usage (on a small dev cluster, dynamic allocation must be disabled with fixed,
 modest executor sizing - otherwise Spark tries to scale executors to match
 input file count, which a small cluster can never satisfy and the job hangs
-forever waiting for resources):
+forever waiting for resources). The Iceberg Spark runtime and AWS SDK v2
+bundle both ship pre-installed on this EMR release under /usr/share/aws/ -
+no --packages/Maven fetch needed:
     spark-submit --deploy-mode cluster \
         --conf spark.dynamicAllocation.enabled=false \
         --conf spark.executor.instances=1 --conf spark.executor.cores=2 --conf spark.executor.memory=1g \
         --conf spark.sql.shuffle.partitions=4 \
+        --jars /usr/share/aws/iceberg/lib/iceberg-spark-runtime-3.5_2.12-1.10.0-amzn-1.jar,/usr/share/aws/aws-java-sdk-v2/aws-sdk-java-bundle-2.42.12.jar \
         silver_job.py <s3_bucket>
 """
 
@@ -89,7 +97,36 @@ def main():
         # IllegalStateException: FlagSet is immutable), killing both queries
         # at once. Disabling the cache gives each query its own instance.
         .config("spark.hadoop.fs.s3a.impl.disable.cache", "true")
+        .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+        .config("spark.sql.catalog.glue_catalog", "org.apache.iceberg.spark.SparkCatalog")
+        .config("spark.sql.catalog.glue_catalog.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
+        .config("spark.sql.catalog.glue_catalog.warehouse", f"s3://{bucket}/warehouse/")
+        .config("spark.sql.catalog.glue_catalog.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
         .getOrCreate()
+    )
+
+    # CREATE TABLE IF NOT EXISTS is idempotent - safe to run on every job start
+    # (a plain step restart is a no-op here; only a genuinely fresh table gets
+    # created). Explicit column list + PARTITIONED BY, rather than letting
+    # writeStream.toTable() auto-create an unpartitioned table on first write.
+    spark.sql(
+        """
+        CREATE TABLE IF NOT EXISTS glue_catalog.crypto_pipeline.silver_crypto (
+            event_id STRING,
+            event_timestamp TIMESTAMP,
+            ingestion_timestamp TIMESTAMP,
+            symbol STRING,
+            price DOUBLE,
+            market_cap DOUBLE,
+            volume_24h DOUBLE,
+            price_change_24h DOUBLE,
+            kafka_partition INT,
+            kafka_offset BIGINT,
+            event_date DATE
+        )
+        USING iceberg
+        PARTITIONED BY (event_date, symbol)
+        """
     )
 
     bronze = (
@@ -156,10 +193,14 @@ def main():
     # state store relies on atomic-rename filesystem semantics that S3 doesn't
     # actually provide (it silently breaks with "delta file ... does not exist"
     # under retries). HDFS provides those semantics; S3 does not. Output DATA
-    # still goes to S3 - only the state checkpoint needs HDFS. Tradeoff: HDFS is
-    # ephemeral to this cluster, so a cluster restart loses dedup state and
-    # Silver reprocesses Bronze from scratch (self-consistent, just not free) -
-    # documented as a known limitation, see docs/BUILD_LOG.md Phase 9.
+    # still goes to S3 (via Iceberg) - only the state checkpoint needs HDFS.
+    # Tradeoff: HDFS is ephemeral to this cluster, so a cluster restart loses
+    # dedup state and Silver reprocesses Bronze from scratch (self-consistent,
+    # just not free) - documented as a known limitation, see BUILD_LOG.md Phase 9.
+    # Checkpoint path changed from /checkpoints/spark/silver/ to .../silver_iceberg/
+    # when the sink switched from a raw Parquet path to an Iceberg table - the old
+    # checkpoint's tracked file list is meaningless against a different sink type,
+    # so this intentionally starts fresh rather than trying to reuse it.
     # Two queries in one Spark app default to FIFO scheduling, which can let one
     # query starve the other for cores on a small cluster (observed: the errors
     # query kept making progress while silver never got a turn). FAIR scheduling
@@ -167,13 +208,11 @@ def main():
     # queries - makes both queries actually share the available cores.
     spark.sparkContext.setLocalProperty("spark.scheduler.pool", "silver")
     silver_query = (
-        silver.writeStream.format("parquet")
-        .option("path", f"s3://{bucket}/silver/crypto/")
-        .option("checkpointLocation", "/checkpoints/spark/silver/")
-        .partitionBy("event_date", "symbol")
+        silver.writeStream.format("iceberg")
+        .option("checkpointLocation", "/checkpoints/spark/silver_iceberg/")
         .outputMode("append")
         .trigger(processingTime="30 seconds")
-        .start()
+        .toTable("glue_catalog.crypto_pipeline.silver_crypto")
     )
 
     spark.sparkContext.setLocalProperty("spark.scheduler.pool", "errors")

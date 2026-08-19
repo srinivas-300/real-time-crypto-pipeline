@@ -1,20 +1,28 @@
 """
-Gold layer streaming job: S3 Silver -> S3 Gold.
+Gold layer streaming job: Iceberg table crypto_pipeline.silver_crypto ->
+Iceberg table crypto_pipeline.gold_crypto.
 
-Reads Silver via the file streaming source (not a second Kafka consumer),
-and computes 5-minute tumbling-window aggregates per symbol: average/min/max
-price, average 24h volume and 24h price change (both already rolling metrics
-from the source, so an average is the meaningful per-window figure rather
-than a sum), and the number of events observed in the window.
+Reads Silver as an Iceberg streaming source (not a second Kafka consumer, and
+not a raw Parquet path+schema - Iceberg carries its own schema in the Glue
+Catalog, so no manual schema/partition-column workaround is needed here the
+way Silver once needed for reading raw Bronze Parquet), and computes 5-minute
+tumbling-window aggregates per symbol: average/min/max price, average 24h
+volume and 24h price change (both already rolling metrics from the source, so
+an average is the meaningful per-window figure rather than a sum), and the
+number of events observed in the window. Output is written to another Iceberg
+table, registered in the same Glue Catalog.
 
 Usage (on a small dev cluster, dynamic allocation must be disabled with fixed,
 modest executor sizing - otherwise Spark tries to scale executors to match
 input file count, which a small cluster can never satisfy and the job hangs
-forever waiting for resources):
+forever waiting for resources). The Iceberg Spark runtime and AWS SDK v2
+bundle both ship pre-installed on this EMR release under /usr/share/aws/ -
+no --packages/Maven fetch needed:
     spark-submit --deploy-mode cluster \
         --conf spark.dynamicAllocation.enabled=false \
         --conf spark.executor.instances=1 --conf spark.executor.cores=2 --conf spark.executor.memory=1g \
         --conf spark.sql.shuffle.partitions=4 \
+        --jars /usr/share/aws/iceberg/lib/iceberg-spark-runtime-3.5_2.12-1.10.0-amzn-1.jar,/usr/share/aws/aws-java-sdk-v2/aws-sdk-java-bundle-2.42.12.jar \
         gold_job.py <s3_bucket>
 """
 
@@ -22,27 +30,6 @@ import sys
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import avg, col, count, max as spark_max, min as spark_min, to_date, window
-from pyspark.sql.types import DoubleType, IntegerType, LongType, StringType, StructField, StructType, TimestampType
-
-# Deliberately excludes event_date/symbol: those are Silver's partition columns
-# (encoded in the S3 path, not stored inside the Parquet files themselves).
-# Including partition columns in an explicit .schema() for a *streaming* file
-# source silently breaks file discovery - the source finds zero rows with no
-# error (see CLAUDE.md gotcha #6). Spark still recovers both columns from the
-# path itself, so `symbol` remains available below for the groupBy.
-SILVER_SCHEMA = StructType(
-    [
-        StructField("event_id", StringType()),
-        StructField("event_timestamp", TimestampType()),
-        StructField("ingestion_timestamp", TimestampType()),
-        StructField("price", DoubleType()),
-        StructField("market_cap", DoubleType()),
-        StructField("volume_24h", DoubleType()),
-        StructField("price_change_24h", DoubleType()),
-        StructField("kafka_partition", IntegerType()),
-        StructField("kafka_offset", LongType()),
-    ]
-)
 
 
 def main():
@@ -51,13 +38,47 @@ def main():
         sys.exit(1)
 
     bucket = sys.argv[1]
-    spark = SparkSession.builder.appName("crypto-pipeline-gold").getOrCreate()
-
-    silver = (
-        spark.readStream.schema(SILVER_SCHEMA)
-        .option("maxFilesPerTrigger", 10)
-        .parquet(f"s3://{bucket}/silver/crypto/")
+    spark = (
+        SparkSession.builder.appName("crypto-pipeline-gold")
+        .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+        .config("spark.sql.catalog.glue_catalog", "org.apache.iceberg.spark.SparkCatalog")
+        .config("spark.sql.catalog.glue_catalog.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
+        .config("spark.sql.catalog.glue_catalog.warehouse", f"s3://{bucket}/warehouse/")
+        # HadoopFileIO (routes through Hadoop's already-proven S3AFileSystem / s3a://
+        # stack), not Iceberg's native S3FileIO (AWS SDK v2-based): S3FileIO's
+        # existence-check HEAD request (used by the streaming source to find its
+        # initial offset) failed with a bare "Bad Request" (400, no error body) against
+        # this EMR AMI's bundled AWS SDK v2 version - Silver's S3FileIO *writes* to its
+        # own Iceberg table work fine, so this is narrowly a read-path/HeadObject issue,
+        # not a blanket S3FileIO incompatibility. HadoopFileIO sidesteps it entirely by
+        # using the same s3a:// implementation every other job in this pipeline already
+        # relies on. Each Spark app's io-impl is independent, purely a client-side
+        # config - Silver (the writer) keeps S3FileIO since its write path already works.
+        .config("spark.sql.catalog.glue_catalog.io-impl", "org.apache.iceberg.hadoop.HadoopFileIO")
+        .getOrCreate()
     )
+
+    # CREATE TABLE IF NOT EXISTS is idempotent - safe to run on every job start.
+    spark.sql(
+        """
+        CREATE TABLE IF NOT EXISTS glue_catalog.crypto_pipeline.gold_crypto (
+            window_start TIMESTAMP,
+            window_end TIMESTAMP,
+            symbol STRING,
+            avg_price DOUBLE,
+            min_price DOUBLE,
+            max_price DOUBLE,
+            avg_volume_24h DOUBLE,
+            avg_price_change_24h DOUBLE,
+            event_count BIGINT,
+            window_date DATE
+        )
+        USING iceberg
+        PARTITIONED BY (window_date, symbol)
+        """
+    )
+
+    silver = spark.readStream.format("iceberg").load("glue_catalog.crypto_pipeline.silver_crypto")
 
     # Same 2-minute watermark as Silver's own dedup - it's the pipeline's
     # established tolerance for out-of-order arrival, and it must be at least
@@ -91,21 +112,22 @@ def main():
     # Windowed aggregation is a stateful operator, same as Silver's
     # dropDuplicates - the checkpoint MUST be local HDFS, not S3, for the same
     # atomic-rename-semantics reason (CLAUDE.md gotcha #7). Output DATA still
-    # goes to S3; only the state checkpoint needs HDFS. Tradeoff: a cluster
-    # restart loses in-flight window state and Gold reprocesses Silver from
-    # scratch (self-consistent, just not free) - same as Silver's own tradeoff.
+    # goes to S3 (via Iceberg); only the state checkpoint needs HDFS. Tradeoff:
+    # a cluster restart loses in-flight window state and Gold reprocesses
+    # Silver from scratch (self-consistent, just not free) - same as Silver's
+    # own tradeoff. Checkpoint path changed to .../gold_iceberg/ since both the
+    # source (Silver, now Iceberg) and sink changed format - the old checkpoint
+    # is meaningless against either.
     #
     # Only one streaming query runs in this application, so the FIFO-vs-FAIR
     # scheduler starvation issue that affected Silver (two queries in one app)
     # doesn't apply here - no second query to starve against.
     gold_query = (
-        gold.writeStream.format("parquet")
-        .option("path", f"s3://{bucket}/gold/crypto/")
-        .option("checkpointLocation", "/checkpoints/spark/gold/")
-        .partitionBy("window_date", "symbol")
+        gold.writeStream.format("iceberg")
+        .option("checkpointLocation", "/checkpoints/spark/gold_iceberg/")
         .outputMode("append")
         .trigger(processingTime="30 seconds")
-        .start()
+        .toTable("glue_catalog.crypto_pipeline.gold_crypto")
     )
 
     gold_query.awaitTermination()
