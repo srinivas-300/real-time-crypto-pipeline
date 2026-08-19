@@ -14,3 +14,5 @@ htmlcov/
 .vscode/
 
 docs/BUILD_LOG.md
+CLAUDE.md
+docs/SESSION_HANDOFF.md
