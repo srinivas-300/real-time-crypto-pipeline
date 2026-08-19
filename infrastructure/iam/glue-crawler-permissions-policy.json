@@ -7,7 +7,7 @@
       "Action": "s3:GetObject",
       "Resource": [
         "arn:aws:s3:::crypto-pipeline-388381628350/silver/crypto/*",
-        "arn:aws:s3:::crypto-pipeline-388381628350/gold/crypto_5min/*"
+        "arn:aws:s3:::crypto-pipeline-388381628350/gold/crypto/*"
       ]
     },
     {
@@ -17,7 +17,7 @@
       "Resource": "arn:aws:s3:::crypto-pipeline-388381628350",
       "Condition": {
         "StringLike": {
-          "s3:prefix": ["silver/crypto/*", "gold/crypto_5min/*"]
+          "s3:prefix": ["silver/crypto/*", "gold/crypto/*"]
         }
       }
     }
