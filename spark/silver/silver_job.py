@@ -80,6 +80,15 @@ def main():
     spark = (
         SparkSession.builder.appName("crypto-pipeline-silver")
         .config("spark.scheduler.mode", "FAIR")
+        # This app runs two concurrent streaming queries (silver_query,
+        # errors_query) against the same S3 bucket. Hadoop's default
+        # FileSystem cache shares one S3AFileSystem object per bucket+user
+        # across both queries' checkpoint managers - when one query's commit
+        # closes that shared object mid-batch, the other sees it as null
+        # (NullPointerException in S3AFileSystem.getStore(), or
+        # IllegalStateException: FlagSet is immutable), killing both queries
+        # at once. Disabling the cache gives each query its own instance.
+        .config("spark.hadoop.fs.s3a.impl.disable.cache", "true")
         .getOrCreate()
     )
 
