@@ -14,19 +14,32 @@ VPC_ID="vpc-068595398cfb311a5"
 PRIVATE_SUBNET_A="subnet-0bbc264afd12cb2ce"
 SG_EMR="sg-074e69b04a381d87e"
 
-SG_SVC=$("$AWS" ec2 create-security-group --group-name crypto-pipeline-emr-service-access-sg \
-  --description "EMR service access channel for private-subnet cluster" --vpc-id "$VPC_ID" \
-  --tag-specifications 'ResourceType=security-group,Tags=[{Key=Name,Value=crypto-pipeline-emr-service-access-sg}]' \
-  --query "GroupId" --output text)
+# Idempotent: the pause/resume cycle deletes the EMR cluster but never this SG
+# (it's not part of the pause teardown), so a second run of this script must not
+# blindly try to recreate it - create-security-group and authorize-security-group-*
+# are NOT idempotent and error out on a second run otherwise (hit this for real on
+# the first pause/resume cycle after Phase 13 planning began).
+SG_SVC=$("$AWS" ec2 describe-security-groups \
+  --filters "Name=group-name,Values=crypto-pipeline-emr-service-access-sg" "Name=vpc-id,Values=$VPC_ID" \
+  --query "SecurityGroups[0].GroupId" --output text 2>/dev/null || true)
 
-# Bidirectional: both SGs need both an ingress and egress rule on 9443 for the
-# other - EMR validates this explicitly and rejects cluster creation otherwise.
-"$AWS" ec2 authorize-security-group-egress --group-id "$SG_SVC" \
-  --ip-permissions "IpProtocol=tcp,FromPort=9443,ToPort=9443,UserIdGroupPairs=[{GroupId=$SG_EMR,Description='HTTPS to EMR master'}]"
-"$AWS" ec2 authorize-security-group-ingress --group-id "$SG_EMR" \
-  --ip-permissions "IpProtocol=tcp,FromPort=9443,ToPort=9443,UserIdGroupPairs=[{GroupId=$SG_SVC,Description='EMR service access HTTPS'}]"
-"$AWS" ec2 authorize-security-group-ingress --group-id "$SG_SVC" \
-  --ip-permissions "IpProtocol=tcp,FromPort=9443,ToPort=9443,UserIdGroupPairs=[{GroupId=$SG_EMR,Description='EMR master to service access'}]"
+if [ -z "$SG_SVC" ] || [ "$SG_SVC" = "None" ]; then
+  SG_SVC=$("$AWS" ec2 create-security-group --group-name crypto-pipeline-emr-service-access-sg \
+    --description "EMR service access channel for private-subnet cluster" --vpc-id "$VPC_ID" \
+    --tag-specifications 'ResourceType=security-group,Tags=[{Key=Name,Value=crypto-pipeline-emr-service-access-sg}]' \
+    --query "GroupId" --output text)
+
+  # Bidirectional: both SGs need both an ingress and egress rule on 9443 for the
+  # other - EMR validates this explicitly and rejects cluster creation otherwise.
+  "$AWS" ec2 authorize-security-group-egress --group-id "$SG_SVC" \
+    --ip-permissions "IpProtocol=tcp,FromPort=9443,ToPort=9443,UserIdGroupPairs=[{GroupId=$SG_EMR,Description='HTTPS to EMR master'}]"
+  "$AWS" ec2 authorize-security-group-ingress --group-id "$SG_EMR" \
+    --ip-permissions "IpProtocol=tcp,FromPort=9443,ToPort=9443,UserIdGroupPairs=[{GroupId=$SG_SVC,Description='EMR service access HTTPS'}]"
+  "$AWS" ec2 authorize-security-group-ingress --group-id "$SG_SVC" \
+    --ip-permissions "IpProtocol=tcp,FromPort=9443,ToPort=9443,UserIdGroupPairs=[{GroupId=$SG_EMR,Description='EMR master to service access'}]"
+else
+  echo "Reusing existing service-access SG: $SG_SVC"
+fi
 
 # NOTE ON SERVICE ROLE POLICY: AmazonEMRServicePolicy_v2 (the newer, tag-gated
 # managed policy) was tried first and rejected cluster creation repeatedly even
@@ -38,6 +51,7 @@ SG_SVC=$("$AWS" ec2 create-security-group --group-name crypto-pipeline-emr-servi
 # permissions, no tag conditions, no custom-role-name PassRole restriction.
 # Still an AWS-authored managed policy, not a custom one. See docs/BUILD_LOG.md
 # Phase 7 for the full troubleshooting trail.
+# attach-role-policy is itself idempotent (a no-op success if already attached).
 "$AWS" iam attach-role-policy \
   --role-name crypto-pipeline-emr-service-role \
   --policy-arn arn:aws:iam::aws:policy/service-role/AmazonElasticMapReduceRole
