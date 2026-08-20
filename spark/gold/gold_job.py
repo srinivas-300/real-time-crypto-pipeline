@@ -32,6 +32,22 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import avg, col, count, max as spark_max, min as spark_min, to_date, window
 
 
+def upsert_to_gold(micro_batch_df, batch_id):
+    # MERGE, not a plain append - see silver_job.py's upsert_to_silver for why:
+    # same root cause (HDFS checkpoint loss on cluster restart -> full source
+    # reprocess -> duplicate rows under a plain append), same fix. Gold's key is
+    # the window+symbol pair rather than event_id.
+    micro_batch_df.createOrReplaceTempView("gold_updates")
+    micro_batch_df.sparkSession.sql(
+        """
+        MERGE INTO glue_catalog.crypto_pipeline.gold_crypto t
+        USING gold_updates s
+        ON t.window_start = s.window_start AND t.symbol = s.symbol
+        WHEN NOT MATCHED THEN INSERT *
+        """
+    )
+
+
 def main():
     if len(sys.argv) != 2:
         print("Usage: gold_job.py <s3_bucket>", file=sys.stderr)
@@ -78,7 +94,22 @@ def main():
         """
     )
 
-    silver = spark.readStream.format("iceberg").load("glue_catalog.crypto_pipeline.silver_crypto")
+    # Iceberg's streaming read only knows how to process pure-append snapshots by
+    # default - it throws IllegalStateException rather than guess what an
+    # overwrite/delete snapshot means for its incremental state. Hit this for real:
+    # a one-off DQ cleanup DELETE on Silver (removing duplicate rows found after a
+    # checkpoint-loss reprocess) produced exactly such a snapshot, and Gold's reader
+    # correctly refused to process it. These options tell it to skip non-append
+    # snapshots instead of failing - the right call here since Gold's own MERGE-based
+    # write (see upsert_to_gold) never needs to see the skipped rows: a Silver DELETE
+    # only removes rows that were already duplicates, so nothing new for Gold to
+    # aggregate is lost by skipping the snapshot that removed them.
+    silver = (
+        spark.readStream.format("iceberg")
+        .option("streaming-skip-overwrite-snapshots", "true")
+        .option("streaming-skip-delete-snapshots", "true")
+        .load("glue_catalog.crypto_pipeline.silver_crypto")
+    )
 
     # Same 2-minute watermark as Silver's own dedup - it's the pipeline's
     # established tolerance for out-of-order arrival, and it must be at least
@@ -114,20 +145,19 @@ def main():
     # atomic-rename-semantics reason (CLAUDE.md gotcha #7). Output DATA still
     # goes to S3 (via Iceberg); only the state checkpoint needs HDFS. Tradeoff:
     # a cluster restart loses in-flight window state and Gold reprocesses
-    # Silver from scratch (self-consistent, just not free) - same as Silver's
-    # own tradeoff. Checkpoint path changed to .../gold_iceberg/ since both the
-    # source (Silver, now Iceberg) and sink changed format - the old checkpoint
-    # is meaningless against either.
+    # Silver from scratch - same as Silver's own tradeoff. Reprocessing is
+    # genuinely self-consistent now that the sink is upsert_to_gold's MERGE
+    # rather than a plain append (see that function's docstring).
     #
     # Only one streaming query runs in this application, so the FIFO-vs-FAIR
     # scheduler starvation issue that affected Silver (two queries in one app)
     # doesn't apply here - no second query to starve against.
     gold_query = (
-        gold.writeStream.format("iceberg")
+        gold.writeStream.foreachBatch(upsert_to_gold)
         .option("checkpointLocation", "/checkpoints/spark/gold_iceberg/")
         .outputMode("append")
         .trigger(processingTime="30 seconds")
-        .toTable("glue_catalog.crypto_pipeline.gold_crypto")
+        .start()
     )
 
     gold_query.awaitTermination()

@@ -7,8 +7,21 @@ landing zone, not where validation/typing happens (that's Silver, Phase 9).
 
 Usage:
     spark-submit --deploy-mode cluster \
-        --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.6,software.amazon.msk:aws-msk-iam-auth:2.2.0 \
+        --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.6,software.amazon.msk:aws-msk-iam-auth:2.3.2,org.apache.kafka:kafka-clients:3.9.2 \
         bronze_job.py <kafka_bootstrap_servers> <s3_bucket>
+
+NOTE on the --packages versions: this EMR release ships its own kafka-clients and
+aws-msk-iam-auth jars bundled in __spark_libs__ (likely added for native MSK
+integration). Originally pinned at 2.2.0/transitive-3.4.1, which silently collided
+with EMR's bundled 2.3.2/3.9.2 on the executor classpath - both versions loaded
+simultaneously, with no error anywhere. Metadata/offset-discovery calls worked fine
+across the mismatch (masking the problem for a long time), but actual record fetches
+silently returned zero rows forever - Bronze looked "RUNNING" and its checkpoint kept
+committing new batches, just with nothing in them. Explicitly requesting the same
+versions EMR already bundles (rather than an unrelated older pin) makes the two
+copies identical instead of conflicting. If this EMR release ever changes its bundled
+versions, check them first via SSM (`ls /path/to/__spark_libs__ | grep -E
+"kafka-clients|msk-iam"` on the master) rather than assuming these stay correct.
 """
 
 import sys

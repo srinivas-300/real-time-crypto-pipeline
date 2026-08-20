@@ -79,6 +79,24 @@ EVENT_SCHEMA = StructType(
 )
 
 
+def upsert_to_silver(micro_batch_df, batch_id):
+    # MERGE, not a plain append: if the checkpoint is ever lost (e.g. an EMR
+    # cluster restart - HDFS checkpoints don't survive that, see the note below)
+    # and this query reprocesses Bronze's full history again, WHEN NOT MATCHED
+    # THEN INSERT means already-committed rows are silently skipped instead of
+    # duplicated. Found the hard way: a checkpoint loss during a pause/resume
+    # cycle left ~40% of Silver's rows as exact duplicates before this existed.
+    micro_batch_df.createOrReplaceTempView("silver_updates")
+    micro_batch_df.sparkSession.sql(
+        """
+        MERGE INTO glue_catalog.crypto_pipeline.silver_crypto t
+        USING silver_updates s
+        ON t.event_id = s.event_id
+        WHEN NOT MATCHED THEN INSERT *
+        """
+    )
+
+
 def main():
     if len(sys.argv) != 2:
         print("Usage: silver_job.py <s3_bucket>", file=sys.stderr)
@@ -195,12 +213,13 @@ def main():
     # under retries). HDFS provides those semantics; S3 does not. Output DATA
     # still goes to S3 (via Iceberg) - only the state checkpoint needs HDFS.
     # Tradeoff: HDFS is ephemeral to this cluster, so a cluster restart loses
-    # dedup state and Silver reprocesses Bronze from scratch (self-consistent,
-    # just not free) - documented as a known limitation, see BUILD_LOG.md Phase 9.
-    # Checkpoint path changed from /checkpoints/spark/silver/ to .../silver_iceberg/
-    # when the sink switched from a raw Parquet path to an Iceberg table - the old
-    # checkpoint's tracked file list is meaningless against a different sink type,
-    # so this intentionally starts fresh rather than trying to reuse it.
+    # dedup state and Silver reprocesses Bronze from scratch - documented as a
+    # known limitation, see BUILD_LOG.md Phase 9. Reprocessing itself is genuinely
+    # self-consistent now that the sink is upsert_to_silver's MERGE rather than a
+    # plain append (see that function's docstring) - the earlier "self-consistent"
+    # claim was true for the original plain-Parquet sink but silently stopped
+    # being true once this moved to Iceberg's persistent, accumulating table with
+    # unconditional appends, until the MERGE fix.
     # Two queries in one Spark app default to FIFO scheduling, which can let one
     # query starve the other for cores on a small cluster (observed: the errors
     # query kept making progress while silver never got a turn). FAIR scheduling
@@ -208,11 +227,11 @@ def main():
     # queries - makes both queries actually share the available cores.
     spark.sparkContext.setLocalProperty("spark.scheduler.pool", "silver")
     silver_query = (
-        silver.writeStream.format("iceberg")
+        silver.writeStream.foreachBatch(upsert_to_silver)
         .option("checkpointLocation", "/checkpoints/spark/silver_iceberg/")
         .outputMode("append")
         .trigger(processingTime="30 seconds")
-        .toTable("glue_catalog.crypto_pipeline.silver_crypto")
+        .start()
     )
 
     spark.sparkContext.setLocalProperty("spark.scheduler.pool", "errors")
