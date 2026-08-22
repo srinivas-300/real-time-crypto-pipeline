@@ -155,33 +155,3 @@ real EMR cluster after every change (fresh S3 output timestamps, Iceberg
 metadata commit cadence, a live Athena query). This is intentional for a
 project this size, not an oversight.
 
-## Operating the pipeline
-
-This project alternates between **paused** (everything cost-bearing torn down)
-and **running** (a full session's infrastructure recreated) — it is not meant
-to run continuously. The two most expensive pieces, EMR and MSK, get deleted
-between sessions along with the NAT Gateway; the S3 bucket, Glue catalog, VPC,
-and IAM roles are cheap to leave alone and are never torn down.
-
-One consequence worth knowing: Silver and Gold's stateful streaming checkpoints
-live on the EMR cluster's *local* HDFS (not S3, which can't provide the
-atomic-rename guarantees those operators need) — so every time the cluster is
-recreated, both jobs lose their progress and reprocess Bronze's entire
-accumulated history from scratch before catching back up to real-time. This is
-safe (the `MERGE INTO` write logic means no duplicate rows land in the tables)
-but takes real wall-clock time, growing with how much history has piled up.
-Don't mistake a slow catch-up for a stall — check whether Iceberg is still
-committing new snapshots roughly every 30-45 seconds before assuming something
-is actually broken.
-
-Detailed step-by-step build and operations runbooks (exact commands for every
-resource, the full gotcha list, cost breakdowns) are kept as local reference
-notes rather than published in this repo.
-
-## Status
-
-Core pipeline (ingestion through Gold aggregation, Athena querying, data
-quality checks, CloudWatch monitoring) is built and verified end-to-end,
-including repeated pause/resume cycles. Formal failure-injection testing and
-further production hardening were deliberately scoped out as not needed for
-this project's goals.
