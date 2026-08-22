@@ -17,6 +17,8 @@ CoinGecko API
   -> Athena
 ```
 
+![Architecture diagram: CoinGecko through the medallion Spark jobs to Athena](docs/images/architecture.jpg)
+
 Built entirely via raw AWS CLI (no Terraform/CDK) — everything under
 `infrastructure/` is a reproducible record of what was run, not auto-applied IaC.
 Region: `us-east-1`, hardcoded throughout (scripts, IAM ARNs, `.env`). This is a
